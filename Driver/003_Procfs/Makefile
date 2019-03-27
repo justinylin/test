@@ -1,6 +1,6 @@
 ifneq ($(KERNELRELEASE),)
 
-obj-m := proc_test.o
+obj-m := proc_test_new.o
 
 else
 
