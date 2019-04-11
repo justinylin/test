@@ -5,6 +5,7 @@
 #include <asm/uaccess.h>
 #include <linux/slab.h>
 #include <linux/device.h>
+#include <asm/semaphore.h>
 
 #define GLOBAL_VAR "globalvar"
 #define GLOBAL_VAR_CLS "globalvar"
@@ -18,6 +19,7 @@ struct globalvar_dev
 	struct cdev cdev;
 	struct class *global_var_cls;
 	struct device *global_var_dev;
+	struct semaphore sem;
 };
 
 struct globalvar_dev *my_dev;
@@ -42,9 +44,19 @@ ssize_t globalvar_read(struct file *filp, char __user *buf, size_t count, loff_t
 	size_t read_count;
 	struct globalvar_dev *dev = filp->private_data;
 
+	/* try to obtain semaphore */
+	if (down_interruptible(&dev->sem))
+	{
+		/* semaphore unavailable */
+		return -ERESTARTSYS;
+	}
+
 	/* check offset */
 	if (*offp >= sizeof(dev->global_var))
+	{
+		up(&dev->sem);
 		return -EFAULT;
+	}
 
 	/* check count */
 	if (*offp + count >= sizeof(dev->global_var))
@@ -58,8 +70,12 @@ ssize_t globalvar_read(struct file *filp, char __user *buf, size_t count, loff_t
 
 	if (copy_to_user(buf, &dev->global_var[*offp], read_count))
 	{
+		up(&dev->sem);
 		return -EFAULT;
 	}
+
+	/* release semaphore */
+	up(&dev->sem);
 
 	return read_count;
 }
@@ -70,9 +86,19 @@ ssize_t globalvar_write(struct file *filp, const char __user *buf, size_t count,
 	size_t write_count;
 	struct globalvar_dev *dev = filp->private_data;
 
+	/* try to obtain semaphore */
+	if (down_interruptible(&dev->sem))
+	{
+		/* semaphore unavailable */
+		return -ERESTARTSYS;
+	}
+
 	/* check offset */
 	if (*offp >= sizeof(dev->global_var))
+	{
+		up(&dev->sem);
 		return -EFAULT;
+	}
 
 	/* check count */
 	if (*offp + count >= sizeof(dev->global_var))
@@ -86,8 +112,12 @@ ssize_t globalvar_write(struct file *filp, const char __user *buf, size_t count,
 
 	if (copy_from_user(&dev->global_var[*offp], buf, write_count))
 	{
+		up(&dev->sem);
 		return -EFAULT;
 	}
+
+	/* release semaphore */
+	up(&dev->sem);
 
 	return write_count;
 }
@@ -124,6 +154,9 @@ static int __init globalvar_init(void)
 		printk(KERN_ERR "allocate memory failed\n");
 		goto __unregister_devno;
 	}
+
+	/* semaphore init, unlocked */
+	sema_init(&my_dev->sem, 1);
 
 	/* create cdev */
 	my_dev->global_var = 0;
