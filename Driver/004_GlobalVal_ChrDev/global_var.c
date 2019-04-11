@@ -9,10 +9,11 @@
 #define GLOBAL_VAR "globalvar"
 #define GLOBAL_VAR_CLS "globalvar"
 #define GLOBAL_VAR_DEV "globalvar"
+#define PAGE_SIZE 4096
 
 struct globalvar_dev
 {
-	int global_var;
+	char global_var[PAGE_SIZE];
 	dev_t devno;
 	struct cdev cdev;
 	struct class *global_var_cls;
@@ -38,25 +39,57 @@ int globalvar_release(struct inode *inode, struct file *filp)
 
 ssize_t globalvar_read(struct file *filp, char __user *buf, size_t count, loff_t *offp)
 {
+	size_t read_count;
 	struct globalvar_dev *dev = filp->private_data;
 
-	if (copy_to_user(buf, &dev->global_var, sizeof(dev->global_var)))
+	/* check offset */
+	if (*offp >= sizeof(dev->global_var))
+		return -EFAULT;
+
+	/* check count */
+	if (*offp + count >= sizeof(dev->global_var))
+	{
+		read_count = sizeof(dev->global_var) - *offp;
+	}
+	else
+	{
+		read_count = count;
+	}
+
+	if (copy_to_user(buf, &dev->global_var[*offp], read_count))
 	{
 		return -EFAULT;
 	}
 
-	return sizeof(dev->global_var);
+	return read_count;
 }
 
+/* TODO: Is the last byte '\0' or not? */
 ssize_t globalvar_write(struct file *filp, const char __user *buf, size_t count, loff_t *offp)
 {
+	size_t write_count;
 	struct globalvar_dev *dev = filp->private_data;
 
-	if (copy_from_user(&dev->global_var, buf, sizeof(dev->global_var)))
+	/* check offset */
+	if (*offp >= sizeof(dev->global_var))
+		return -EFAULT;
+
+	/* check count */
+	if (*offp + count >= sizeof(dev->global_var))
+	{
+		write_count = sizeof(dev->global_var) - *offp;
+	}
+	else
+	{
+		write_count = count;
+	}
+
+	if (copy_from_user(&dev->global_var[*offp], buf, write_count))
 	{
 		return -EFAULT;
 	}
-	return sizeof(dev->global_var);
+
+	return write_count;
 }
 
 struct file_operations globalvar_fops = {
