@@ -2,15 +2,24 @@
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/slab.h>
 #include <linux/device.h>
-#include <asm/semaphore.h>
+#include <linux/semaphore.h>
+#include <linux/ioctl.h>
 
 #define GLOBAL_VAR "globalvar"
 #define GLOBAL_VAR_CLS "globalvar"
 #define GLOBAL_VAR_DEV "globalvar"
+
+#ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
+#endif
+
+/* ioctl opcode */
+#define GLOBAL_VAR_TYPE 'g'
+#define GLOBAL_VAR_GET_SIZE_NR (1)
+#define GLOBAL_GET_SIZE _IOR(GLOBAL_VAR_TYPE, GLOBAL_VAR_GET_SIZE_NR, int)
 
 struct globalvar_dev
 {
@@ -122,12 +131,83 @@ ssize_t globalvar_write(struct file *filp, const char __user *buf, size_t count,
 	return write_count;
 }
 
+static long globalvar_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	int size = 0;
+	struct globalvar_dev *dev = filp->private_data;
+
+	/* try to obtain semaphore */
+	if (down_interruptible(&dev->sem))
+	{
+		/* semaphore unavailable */
+		return -ERESTARTSYS;
+	}
+
+	/* check type */
+	if (GLOBAL_VAR_TYPE != _IOC_TYPE(cmd))
+	{
+		printk(KERN_ERR "wrong type\n");
+		up(&dev->sem);
+		return -ENOTTY;
+	}
+
+	switch (_IOC_NR(cmd))
+	{
+	case GLOBAL_VAR_GET_SIZE_NR:
+		/* get size */
+		if (_IOC_READ != _IOC_DIR(cmd))
+		{
+			printk(KERN_ERR "wrong direction\n");
+			up(&dev->sem);
+			return -ENOTTY;
+		}
+		else
+		{
+			if(access_ok(VERIFY_WRITE, (void __user *)&arg, sizeof(size)))
+			{
+				/* access ok */
+
+				size = sizeof(dev->global_var);
+
+				if (0 != copy_to_user((void __user *)&arg, (void *)&size, sizeof(size)))
+				{
+					/* copy_to_user failed */
+					up(&dev->sem);
+					return -EFAULT;
+				}
+			}
+			else
+			{
+				/* access failed */
+				printk(KERN_ERR "user space addr can't access\n");
+				up(&dev->sem);
+				return -EFAULT;
+			}
+		}
+		break;
+
+	default:
+		up(&dev->sem);
+		return -ENOTTY;
+		break;
+	}
+
+	/* release semaphore */
+	up(&dev->sem);
+
+	return 0;
+}
+
 struct file_operations globalvar_fops = {
 	.owner = THIS_MODULE,
 	.open = globalvar_open,
 	.release = globalvar_release,
 	.read = globalvar_read,
-	.write = globalvar_write
+	.write = globalvar_write,
+        .unlocked_ioctl = globalvar_ioctl,
+#ifdef CONFIG_COMPAT
+        .compat_ioctl   = globalvar_ioctl,
+#endif
 };
 
 static int __init globalvar_init(void)
@@ -141,7 +221,7 @@ static int __init globalvar_init(void)
 	if (ret < 0)
 	{
 		printk(KERN_ERR "allocate devno failed\n");
-		return ret;
+		return -EINVAL;
 	}
 
 	dev_major = MAJOR(devno);
@@ -159,7 +239,8 @@ static int __init globalvar_init(void)
 	sema_init(&my_dev->sem, 1);
 
 	/* create cdev */
-	my_dev->global_var = 0;
+	memset(my_dev->global_var, 0, sizeof(my_dev->global_var));
+
 	my_dev->devno = devno;
 
 	cdev_init(&my_dev->cdev, &globalvar_fops);
@@ -189,6 +270,8 @@ static int __init globalvar_init(void)
 		ret = PTR_ERR(my_dev->global_var_dev);
 		goto __class_destroy;
 	}
+
+	return ret;
 
 __class_destroy:
 	class_destroy(my_dev->global_var_cls);
